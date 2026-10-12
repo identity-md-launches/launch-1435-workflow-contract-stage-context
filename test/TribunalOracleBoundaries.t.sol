@@ -9,7 +9,7 @@ import {TribunalFixture} from "./helpers/TribunalFixture.sol";
 contract TribunalOracleBoundariesTest is TribunalFixture {
     /// @dev Mutate every signed field independently; most variants remain structurally valid.
     function testFuzz_everyAttestationFieldIsAuthenticated(uint8 fieldSeed, bool yes) public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("untampered UUID"), yes);
         a.agreed = 5;
@@ -45,7 +45,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
 
     function testFuzz_nonCanonicalBooleanWordsCannotBeConsumed(uint256 word) public {
         word = bound(word, 2, type(uint256).max);
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("noncanonical bool"), true);
         a.answer = abi.encode(word);
@@ -65,7 +65,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
     function testFuzz_wrongBooleanAnswerLengthIsRejected(uint256 size) public {
         size = bound(size, 0, 96);
         if (size == 32) size = 33;
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("wrong answer length"), false);
         a.answer = new bytes(size);
@@ -79,7 +79,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
 
     function test_zeroUUIDZeroQuestionAndPreRequestTimestampAreRejected() public {
         for (uint256 variant; variant < 3; ++variant) {
-            uint256 id = _create();
+            uint256 id = _createContested();
             bytes32 rid = _request(id);
             OracleAttestation.Attestation memory a = _attestation(keccak256(abi.encode(variant)), true);
             if (variant == 0) a.requestId = bytes32(0);
@@ -95,7 +95,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
     }
 
     function test_expiryIsInclusiveAndClockToleranceBoundaryIsAccepted() public {
-        uint256 first = _create();
+        uint256 first = _createContested();
         bytes32 rid = _request(first);
         OracleAttestation.Attestation memory a = _attestation(keccak256("at expiry"), false);
         bytes memory signature = _sign(a);
@@ -103,7 +103,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
         assertTrue(intake.deliverResult(rid, a, signature));
         assertEq(uint256(tribunal.getMarket(first).state), uint256(Tribunal.State.No));
 
-        uint256 second = _create();
+        uint256 second = _createContested();
         rid = _request(second);
         a = _attestation(keccak256("at allowed clock drift"), true);
         a.issuedAt += 300;
@@ -114,6 +114,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
     function test_failureAtDeadlineCannotChangeOutcomeAndAnyoneCanUnlockRefunds() public {
         uint256 id = _create();
         _bet(id, alice, false, 100 ether);
+        _bet(id, bob, true, 300 ether);
         bytes32 rid = _request(id);
         vm.warp(tribunal.getMarket(id).deadline);
         assertFalse(intake.deliverFailure(rid, 1, bytes32("body_invalid"), 0, 0));
@@ -121,13 +122,14 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
         vm.prank(carol);
         tribunal.voidMarket(id);
         assertEq(_claim(id, alice), 100 ether);
+        assertEq(_claim(id, bob), 300 ether);
         assertEq(_claim(id, creator), 10_000 ether);
-        assertEq(imd.balanceOf(creator), 99.5 ether);
+        assertEq(imd.balanceOf(creator), 99.5 ether, "a jury that was summoned stays paid");
         _assertSolvent();
     }
 
     function test_deferredResultCannotExtendDeadlineOrSurviveTimeout() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         Tribunal.Market memory pending = tribunal.getMarket(id);
         vm.warp(pending.deadline - 1);
@@ -148,7 +150,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
     }
 
     function test_newAndOldMarketsRejectEachOthersSignerAfterRotation() public {
-        uint256 oldMarket = _create();
+        uint256 oldMarket = _createContested();
         bytes32 oldRequest = _request(oldMarket);
         uint256 newKey = 0x715b;
         vm.prank(owner);
@@ -164,7 +166,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
         tribunal.submitAttestation(oldMarket, a, _sign(a));
         assertEq(uint256(tribunal.getMarket(oldMarket).state), uint256(Tribunal.State.Yes));
 
-        uint256 newMarket = _create();
+        uint256 newMarket = _createContested();
         bytes32 newRequest = _request(newMarket);
         a = _attestation(keccak256("new market"), false);
         assertTrue(intake.deliverResult(newRequest, a, _sign(a)));
@@ -176,7 +178,7 @@ contract TribunalOracleBoundariesTest is TribunalFixture {
     }
 
     function test_signatureFromAnotherChainCannotSettleHere() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("other chain domain"), true);
         vm.chainId(4663);

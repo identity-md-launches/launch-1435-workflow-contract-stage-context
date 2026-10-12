@@ -7,6 +7,13 @@ import {TribunalFixture} from "./helpers/TribunalFixture.sol";
 import {MockIntake, MockToken} from "./helpers/Mocks.sol";
 
 contract TribunalEscrowBoundariesTest is TribunalFixture {
+    /// @dev Scheduled configuration only applies after the 48-hour delay and an explicit activation.
+    function _activateScheduledConfig() internal {
+        vm.warp(vm.getBlockTimestamp() + tribunal.CONFIG_DELAY());
+        vm.prank(carol); // Anyone may activate a matured schedule.
+        tribunal.activateOracleConfig();
+    }
+
     function test_replacementIntakeCanReuseAnIdWithoutOverwritingOldMarket() public {
         bytes32 sharedId = keccak256("same id issued by independent intakes");
         intake.setForcedId(sharedId);
@@ -26,10 +33,12 @@ contract TribunalEscrowBoundariesTest is TribunalFixture {
         tribunal.setAction(bytes32("oracle.request@oracle-2"));
         tribunal.setPayment(address(nextAsset), 1 ether);
         vm.stopPrank();
+        _activateScheduledConfig();
         uint256 newMarket = _create();
         _bet(newMarket, alice, true, 200 ether);
         _bet(newMarket, bob, false, 100 ether);
-        vm.warp(tribunal.getMarket(oldMarket).resolveAfter);
+        vm.warp(tribunal.getMarket(newMarket).resolveAfter);
+        assertLt(vm.getBlockTimestamp(), tribunal.getMarket(oldMarket).deadline);
         assertEq(tribunal.requestResolution(oldMarket), sharedId);
         assertEq(tribunal.requestResolution(newMarket), sharedId);
         assertEq(tribunal.requestMarket(address(intake), sharedId), oldMarket);
@@ -73,6 +82,7 @@ contract TribunalEscrowBoundariesTest is TribunalFixture {
         tribunal.setIntake(address(nextIntake));
         tribunal.setPayment(address(nextAsset), 2 ether);
         vm.stopPrank();
+        _activateScheduledConfig();
         uint256 newMarket = _create();
         assertEq(tribunal.oracleEscrow(address(imd)), 0.5 ether);
         assertEq(tribunal.oracleEscrow(address(nextAsset)), 2 ether);
@@ -93,6 +103,7 @@ contract TribunalEscrowBoundariesTest is TribunalFixture {
         uint256 oldMarket = _create(); // Its prepaid IMD must remain untouched.
         vm.prank(owner);
         tribunal.setPayment(address(verdict), 0.5 ether);
+        _activateScheduledConfig();
         uint256 sharedAssetMarket = _create();
         uint256 unrequestedMarket = _create();
         _bet(sharedAssetMarket, alice, true, 100 ether);
@@ -176,6 +187,97 @@ contract TribunalEscrowBoundariesTest is TribunalFixture {
                 assertEq(tribunal.verdictLiability(), 10_000 ether);
             }
         }
+        _assertSolvent();
+    }
+
+    /// @dev The uncontested ask refunds the fee in the asset the market was created with, even after
+    /// the payment configuration changed and even if the current Intake would reject a request.
+    function test_uncontestedAskRefundsFeeInOriginalAssetAfterReconfiguration() public {
+        uint256 oneSided = _create();
+        _bet(oneSided, alice, true, 100 ether);
+        _bet(oneSided, bob, true, 250 ether);
+        MockToken nextAsset = new MockToken();
+        vm.prank(owner);
+        tribunal.setPayment(address(nextAsset), 3 ether);
+        _activateScheduledConfig();
+        intake.setReject(true);
+        vm.warp(tribunal.getMarket(oneSided).resolveAfter);
+        Tribunal.Market memory before = tribunal.getMarket(oneSided);
+        vm.prank(carol);
+        assertEq(tribunal.requestResolution(oneSided), bytes32(0));
+        Tribunal.Market memory m = tribunal.getMarket(oneSided);
+        assertEq(uint256(m.state), uint256(Tribunal.State.Void));
+        assertEq(m.failureReason, bytes32("uncontested"));
+        assertFalse(m.oracleSpent);
+        assertEq(m.requestId, bytes32(0));
+        assertEq(m.requestedAt, 0);
+        assertEq(m.deadline, before.deadline);
+        assertEq(tribunal.oracleEscrow(address(imd)), 0.5 ether, "fee stays escrowed until the creator claims");
+        assertEq(imd.allowance(address(tribunal), address(intake)), 0);
+        assertEq(intake.nonce(), 0, "no request may reach the Intake");
+
+        assertEq(_claim(oneSided, alice), 100 ether);
+        assertEq(_claim(oneSided, bob), 250 ether);
+        assertEq(_claim(oneSided, creator), 10_000 ether);
+        assertEq(imd.balanceOf(creator), 100 ether, "refund uses the original asset");
+        assertEq(nextAsset.balanceOf(creator), 0);
+        assertEq(tribunal.oracleEscrow(address(imd)), 0);
+        assertEq(tribunal.verdictLiability(), 0);
+        assertEq(verdict.balanceOf(tribunal.BURN_ADDRESS()), 0, "a refund must not burn");
+        _assertSolvent();
+    }
+
+    function test_creatorBettingBothSidesAloneIsContestedAndPaysTheJury() public {
+        uint256 id = _create();
+        _bet(id, creator, true, 100 ether);
+        _bet(id, creator, false, 100 ether);
+        _resolve(id, true);
+        assertTrue(tribunal.getMarket(id).oracleSpent);
+        assertEq(imd.balanceOf(address(intake)), 0.5 ether);
+        // Stake 100 + profit 98 + bond 10,000 + creator fee 1; 1 burned.
+        assertEq(_claim(id, creator), 10_199 ether);
+        assertEq(verdict.balanceOf(tribunal.BURN_ADDRESS()), 1 ether);
+        assertEq(imd.balanceOf(creator), 99.5 ether);
+        assertEq(tribunal.verdictLiability(), 0);
+        _assertSolvent();
+    }
+
+    function test_uncontestedVoidIsFinalAndTheLastAskableSecondMatchesTheTimeoutPath() public {
+        uint256 early = _create();
+        uint256 late = _create();
+        _bet(early, alice, false, 100 ether);
+        _bet(late, bob, false, 100 ether);
+        uint64 deadline = tribunal.getMarket(early).deadline;
+
+        vm.warp(deadline - 1);
+        assertEq(tribunal.requestResolution(early), bytes32(0));
+        assertEq(uint256(tribunal.getMarket(early).state), uint256(Tribunal.State.Void));
+        vm.expectRevert(Tribunal.WrongState.selector);
+        tribunal.requestResolution(early);
+        vm.expectRevert(Tribunal.WrongState.selector);
+        tribunal.voidMarket(early);
+        vm.prank(alice);
+        vm.expectRevert(Tribunal.WrongState.selector);
+        tribunal.betYes(early, 100 ether);
+        vm.prank(address(intake));
+        vm.expectRevert(Tribunal.NotTheIntake.selector);
+        tribunal.onOracleFailure(bytes32(0), 2, bytes32("disagreed"), 0, 0, "");
+
+        vm.warp(deadline);
+        vm.expectRevert(Tribunal.DeadlinePassed.selector);
+        tribunal.requestResolution(late);
+        tribunal.voidMarket(late);
+        assertEq(tribunal.getMarket(late).failureReason, bytes32("timeout"));
+        assertFalse(tribunal.getMarket(late).oracleSpent);
+
+        assertEq(_claim(early, alice), 100 ether);
+        assertEq(_claim(late, bob), 100 ether);
+        assertEq(_claim(early, creator), 10_000 ether);
+        assertEq(_claim(late, creator), 10_000 ether);
+        assertEq(imd.balanceOf(creator), 100 ether, "both paths return the unspent fee");
+        vm.expectRevert(Tribunal.AlreadyClaimed.selector);
+        _claim(early, creator);
+        assertEq(tribunal.verdictLiability(), 0);
         _assertSolvent();
     }
 

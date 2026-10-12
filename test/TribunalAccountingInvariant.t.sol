@@ -47,6 +47,7 @@ contract TribunalAccountingHandler is Test {
     uint256 public paymentDonations;
     uint256 public successfulBets;
     uint256 public successfulRequests;
+    uint256 public uncontestedVoids;
     uint256 public successfulAnswers;
     uint256 public successfulClaims;
 
@@ -100,6 +101,7 @@ contract TribunalAccountingHandler is Test {
         vm.warp(vm.getBlockTimestamp() + bound(seconds_, 0, 1 days));
     }
 
+    /// @dev A contested ask spends the fee and goes Pending; an uncontested ask voids without a jury.
     function ask(uint256 seed) public {
         uint256 id = _id(seed);
         Tribunal.Market memory m = tribunal.getMarket(id);
@@ -108,8 +110,17 @@ contract TribunalAccountingHandler is Test {
         if (markets[id].state != Tribunal.State.Open) vm.expectRevert(Tribunal.WrongState.selector);
         else if (vm.getBlockTimestamp() < m.resolveAfter) vm.expectRevert(Tribunal.TooEarly.selector);
         else if (vm.getBlockTimestamp() >= m.deadline) vm.expectRevert(Tribunal.DeadlinePassed.selector);
-        tribunal.requestResolution(id);
-        if (valid) {
+        bytes32 requestId = tribunal.requestResolution(id);
+        if (!valid) return;
+        if (markets[id].yes == 0 || markets[id].no == 0) {
+            assertEq(requestId, bytes32(0), "an uncontested market must not summon a jury");
+            assertEq(tribunal.getMarket(id).requestId, bytes32(0), "uncontested void must not record a request");
+            assertEq(tribunal.getMarket(id).deadline, m.deadline, "uncontested void must not extend the lock");
+            markets[id].state = Tribunal.State.Void;
+            ++uncontestedVoids;
+        } else {
+            assertNotEq(requestId, bytes32(0), "a contested market must receive a request id");
+            assertEq(tribunal.requestMarket(address(intake), requestId), id, "request must pair with its market");
             markets[id].state = Tribunal.State.Pending;
             markets[id].spent = true;
             ++successfulRequests;
@@ -364,22 +375,33 @@ contract TribunalAccountingInvariantTest is StdInvariant, Test {
 
     /// @dev Keeps every success branch reachable independently of the random seed.
     function test_handlerExercisesResolutionFailureTimeoutDonationsAndRepeatedClaims() public {
-        handler.create(1, 1 hours);
-        handler.create(2, 1 hours);
+        handler.create(1, 1 hours); // Market 2: contested, then the jury disagrees.
+        handler.create(2, 1 hours); // Market 3: one-sided, voided without a jury.
+        handler.create(3, 1 hours); // Market 4: empty, voided without a jury.
+        handler.bet(1, 1, 100 ether, true);
+        handler.bet(1, 2, 100 ether, false);
+        handler.bet(2, 3, 100 ether, true);
         handler.advance(2 hours);
         handler.ask(0);
         handler.answer(0, false, false);
         handler.ask(1);
         handler.answer(1, true, true);
+        handler.ask(2);
+        handler.answer(2, true, false); // Nothing pending: must be a no-op.
+        handler.ask(3);
+        handler.claim(2, 3); // One-sided bettor is refunded in full.
+        handler.claim(2, 2); // Its creator recovers the bond and the unspent jury fee.
         handler.claim(0, 1); // Loser claims first and triggers the one burn.
         handler.claim(0, 1); // Must reject even a repeated zero-value claim.
         handler.donate(0, 1, false);
         handler.donate(1, 1, true);
-        assertEq(handler.successfulBets(), 4);
+        assertEq(handler.successfulBets(), 7);
         assertEq(handler.successfulRequests(), 2);
+        assertEq(handler.uncontestedVoids(), 2);
         assertEq(handler.successfulAnswers(), 2);
+        assertEq(payment.balanceOf(address(intake)), 1 ether, "only contested markets pay the jury");
         handler.finishAndClaimAll();
-        assertGe(handler.successfulClaims(), 5);
+        assertEq(handler.successfulClaims(), 8);
         invariant_fixedSupplyAcrossCustodyClaimsAndBurnAddressTransfers();
     }
 }
