@@ -1,0 +1,29 @@
+{
+  "kind": "evm_project",
+  "token": {
+    "contract": "LaunchToken",
+    "name": "Verdict",
+    "symbol": "VERDICT",
+    "decimals": 18
+  },
+  "contracts": [
+    {
+      "contract": "Tribunal",
+      "constructorArgs": [
+        "$owner",
+        "0xa43e6f75ee006411f79ac1c84120606c2330de82",
+        "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
+        "0x6f7261636c652e72657175657374406f7261636c652d31000000000000000000",
+        "500000000000000000",
+        "0x5598aa9146215bc13eb26f2c692ad1461fd32982"
+      ]
+    }
+  ],
+  "pool": {
+    "pairedCurrency": "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
+    "fee": 12500,
+    "tickSpacing": 60,
+    "initialPrice": "79228162514264337593543950336"
+  },
+  "notes": "LaunchToken is Verdict (VERDICT). Tribunal is the sole application and holds prediction-market bonds and bets in VERDICT. Its constructor arguments are the launch owner, Ethereum Intake v2, IMD payment asset, right-padded bytes32 oracle.request@oracle-1 action, 0.5 IMD in minor units, and the published oracle signer. The signer matches the attester returned by https://api.imd.fun/oracle/requests?limit=1 on 2026-10-12. After deployment, the owner must set the actual LaunchToken address once through setVerdictToken before markets can be created; the factory makes no initialization calls. Subsequent signer changes require a 48-hour delay and activation, and existing markets retain their snapshotted signer. The owner has no administrative withdrawal or market-resolution function. Tribunal's settlement charge is separate from the pool's 1.25% trading fee. The factory supplies the pool and MerkleDistributor, including the initialization-only pool guard. Source publication, signed artifact linkage, admission and deployment are subsequent service responsibilities."
+}
