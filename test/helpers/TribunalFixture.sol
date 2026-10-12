@@ -52,6 +52,12 @@ abstract contract TribunalFixture is Test {
         );
     }
 
+    function _createContested() internal returns (uint256 id) {
+        id = _create();
+        _bet(id, alice, true, 100 ether);
+        _bet(id, bob, false, 100 ether);
+    }
+
     function _bet(uint256 id, address user, bool yes, uint256 amount) internal {
         vm.prank(user);
         if (yes) tribunal.betYes(id, amount);

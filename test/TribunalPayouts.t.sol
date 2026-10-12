@@ -59,10 +59,12 @@ contract TribunalPayoutsTest is TribunalFixture {
     function test_bodyRefusalRefundsAndRecordsReason() public {
         uint256 id = _create();
         _bet(id, alice, true, 100 ether);
+        _bet(id, bob, false, 100 ether);
         bytes32 rid = _request(id);
         assertTrue(intake.deliverFailure(rid, 1, bytes32("body_refused"), 0, 0));
         assertEq(tribunal.getMarket(id).failureReason, bytes32("body_refused"));
         assertEq(_claim(id, alice), 100 ether);
+        assertEq(_claim(id, bob), 100 ether);
         assertEq(_claim(id, creator), 10_000 ether);
         _assertSolvent();
     }
@@ -70,10 +72,12 @@ contract TribunalPayoutsTest is TribunalFixture {
     function test_pendingTimeoutRefundsButJuryCostRemainsSpent() public {
         uint256 id = _create();
         _bet(id, alice, true, 100 ether);
+        _bet(id, bob, false, 100 ether);
         _request(id);
         vm.warp(tribunal.getMarket(id).deadline);
         tribunal.voidMarket(id);
         _claim(id, alice);
+        _claim(id, bob);
         _claim(id, creator);
         assertEq(imd.balanceOf(creator), 99.5 ether);
         _assertSolvent();
@@ -95,22 +99,69 @@ contract TribunalPayoutsTest is TribunalFixture {
         _assertSolvent();
     }
 
-    function test_oneSidedWinningAndLosingMarketsAndEmptyMarketReturnFullDeposits() public {
+    function test_oneSidedAndEmptyMarketsReturnFullDepositsWithoutAJury() public {
         uint256 id1 = _create();
         uint256 id2 = _create();
         uint256 id3 = _create();
         _bet(id1, alice, true, 100 ether);
         _bet(id2, bob, false, 200 ether);
-        _resolve(id1, true);
-        _resolve(id2, true); // Even the only losing side gets its deposit back.
-        _resolve(id3, false);
+        assertEq(_request(id1), bytes32(0));
+        assertEq(_request(id2), bytes32(0));
+        assertEq(_request(id3), bytes32(0));
+        for (uint256 id = id1; id <= id3; ++id) {
+            assertEq(uint256(tribunal.getMarket(id).state), uint256(Tribunal.State.Void));
+            assertFalse(tribunal.getMarket(id).oracleSpent);
+        }
         assertEq(_claim(id1, alice), 100 ether);
         assertEq(_claim(id2, bob), 200 ether);
         assertEq(_claim(id1, creator), 10_000 ether);
         assertEq(_claim(id2, creator), 10_000 ether);
         assertEq(_claim(id3, creator), 10_000 ether);
+        assertEq(imd.balanceOf(creator), 100 ether);
+        assertEq(intake.nonce(), 0);
+        assertEq(imd.balanceOf(address(intake)), 0);
         assertEq(verdict.balanceOf(tribunal.BURN_ADDRESS()), 0);
         _assertSolvent();
+    }
+
+    function test_lateOneSidedRequestDoesNotSpendOrExtendLockEvenIfIntakeUnavailable() public {
+        uint256 id = _create();
+        _bet(id, alice, true, 1000 ether);
+        uint64 deadline = tribunal.getMarket(id).deadline;
+        vm.warp(tribunal.getMarket(id).closeTime);
+        vm.expectRevert(Tribunal.TooEarly.selector);
+        tribunal.requestResolution(id);
+        intake.setReject(true);
+        vm.warp(deadline - 1);
+        vm.prank(carol);
+        assertEq(tribunal.requestResolution(id), bytes32(0));
+        Tribunal.Market memory m = tribunal.getMarket(id);
+        assertEq(uint256(m.state), uint256(Tribunal.State.Void));
+        assertEq(m.failureReason, bytes32("uncontested"));
+        assertEq(m.deadline, deadline);
+        assertEq(m.requestedAt, 0);
+        assertEq(m.requestId, bytes32(0));
+        assertFalse(m.oracleSpent);
+        assertEq(intake.nonce(), 0);
+        assertEq(imd.balanceOf(address(intake)), 0);
+        assertEq(imd.allowance(address(tribunal), address(intake)), 0);
+        assertEq(tribunal.oracleEscrow(address(imd)), 0.5 ether);
+        vm.expectRevert(Tribunal.WrongState.selector);
+        tribunal.requestResolution(id);
+        vm.prank(address(intake));
+        vm.expectRevert(Tribunal.NotTheIntake.selector);
+        tribunal.onOracleFailure(bytes32(0), 2, bytes32("disagreed"), 3, 5, "");
+        assertEq(_claim(id, creator), 10_000 ether);
+        assertEq(_claim(id, alice), 1000 ether);
+        assertEq(imd.balanceOf(creator), 100 ether);
+        assertEq(verdict.balanceOf(creator), 1_000_000 ether);
+        assertEq(verdict.balanceOf(alice), 1_000_000 ether);
+        assertEq(verdict.balanceOf(tribunal.BURN_ADDRESS()), 0);
+        vm.prank(creator);
+        vm.expectRevert(Tribunal.AlreadyClaimed.selector);
+        tribunal.claim(id);
+        _assertSolvent();
+        assertEq(tribunal.verdictLiability(), 0);
     }
 
     function test_invalidClaimsAndNoDoubleClaimEvenForZeroPayout() public {

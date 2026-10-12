@@ -20,6 +20,7 @@ contract Tribunal is OracleAttestationConsumer, Ownable2Step, ReentrancyGuard {
     uint256 public constant MIN_BET = 100 ether;
     uint64 public constant ANSWER_TIMEOUT = 7 days;
     uint64 public constant SIGNER_DELAY = 48 hours;
+    uint64 public constant CONFIG_DELAY = 48 hours;
     address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
     uint256 private constant FINALIZE_GAS = 120_000;
 
@@ -92,11 +93,17 @@ contract Tribunal is OracleAttestationConsumer, Ownable2Step, ReentrancyGuard {
     error UnexpectedTokenAmount();
     error SignerDelayPending();
     error NoPendingSigner();
+    error ConfigDelayPending();
+    error NoPendingConfig();
 
     event VerdictTokenSet(address indexed token);
     event IntakeSet(address indexed intake);
     event ActionSet(bytes32 indexed action);
     event PaymentSet(address indexed asset, uint256 price);
+    event OracleConfigScheduled(
+        address indexed intake, address indexed asset, bytes32 action, uint256 price, uint64 activateAfter
+    );
+    event OracleConfigScheduleCancelled();
     event SignerScheduled(address indexed signer, uint64 activateAfter);
     event SignerScheduleCancelled(address indexed signer);
     event MarketCreated(
@@ -120,6 +127,8 @@ contract Tribunal is OracleAttestationConsumer, Ownable2Step, ReentrancyGuard {
 
     IERC20 public verdictToken;
     OracleConfig public oracleConfig;
+    OracleConfig public pendingOracleConfig;
+    uint64 public configActivateAfter;
     address public pendingSigner;
     uint64 public signerActivateAfter;
     uint256 public marketCount;
@@ -147,24 +156,60 @@ contract Tribunal is OracleAttestationConsumer, Ownable2Step, ReentrancyGuard {
         emit VerdictTokenSet(token);
     }
 
-    /// @notice Configuration changes affect only markets created afterwards.
+    /// @notice Schedules an Intake for future markets, subject to a fresh 48-hour delay.
+    /// @dev Each setter edits the pending configuration, or the active one if no schedule exists.
     function setIntake(address intake_) external onlyOwner {
         if (intake_ == address(0)) revert InvalidConfiguration();
-        oracleConfig.intake = intake_;
-        emit IntakeSet(intake_);
+        OracleConfig memory config = _configToSchedule();
+        config.intake = intake_;
+        _scheduleConfig(config);
     }
 
+    /// @notice Edits the pending action and restarts the delay for the entire configuration.
     function setAction(bytes32 action_) external onlyOwner {
         if (action_ == bytes32(0)) revert InvalidConfiguration();
-        oracleConfig.action = action_;
-        emit ActionSet(action_);
+        OracleConfig memory config = _configToSchedule();
+        config.action = action_;
+        _scheduleConfig(config);
     }
 
+    /// @notice Edits the pending asset/price together and restarts the configuration delay.
     function setPayment(address asset_, uint256 price_) external onlyOwner {
         if (asset_ == address(0) || price_ == 0) revert InvalidConfiguration();
-        oracleConfig.asset = asset_;
-        oracleConfig.price = price_;
-        emit PaymentSet(asset_, price_);
+        OracleConfig memory config = _configToSchedule();
+        config.asset = asset_;
+        config.price = price_;
+        _scheduleConfig(config);
+    }
+
+    function cancelOracleConfigChange() external onlyOwner {
+        if (configActivateAfter == 0) revert NoPendingConfig();
+        delete pendingOracleConfig;
+        delete configActivateAfter;
+        emit OracleConfigScheduleCancelled();
+    }
+
+    /// @notice Anyone may activate the complete matured configuration. Existing markets keep theirs.
+    function activateOracleConfig() external {
+        if (configActivateAfter == 0) revert NoPendingConfig();
+        if (block.timestamp < configActivateAfter) revert ConfigDelayPending();
+        OracleConfig memory config = pendingOracleConfig;
+        delete pendingOracleConfig;
+        delete configActivateAfter;
+        oracleConfig = config;
+        emit IntakeSet(config.intake);
+        emit ActionSet(config.action);
+        emit PaymentSet(config.asset, config.price);
+    }
+
+    function _configToSchedule() private view returns (OracleConfig memory) {
+        return configActivateAfter == 0 ? oracleConfig : pendingOracleConfig;
+    }
+
+    function _scheduleConfig(OracleConfig memory config) private {
+        pendingOracleConfig = config;
+        configActivateAfter = uint64(block.timestamp + CONFIG_DELAY);
+        emit OracleConfigScheduled(config.intake, config.asset, config.action, config.price, configActivateAfter);
     }
 
     /// @notice Schedules a signer for future markets; replacing a schedule restarts the delay.
@@ -257,12 +302,19 @@ contract Tribunal is OracleAttestationConsumer, Ownable2Step, ReentrancyGuard {
         emit BetPlaced(id, msg.sender, yes, amount);
     }
 
-    /// @notice The prepaid oracle fee is spent only here; a reverting Intake call leaves it escrowed.
+    /// @notice Uncontested markets become VOID for full refunds without spending the oracle fee.
+    /// A contested market spends its prepaid fee here; a reverting Intake call leaves it escrowed.
     function requestResolution(uint256 id) external nonReentrant returns (bytes32 requestId) {
         Market storage m = _market(id);
         if (m.state != State.Open) revert WrongState();
         if (block.timestamp < m.resolveAfter) revert TooEarly();
         if (block.timestamp >= m.deadline) revert DeadlinePassed();
+        if (m.yesPool == 0 || m.noPool == 0) {
+            m.state = State.Void;
+            m.failureReason = bytes32("uncontested");
+            emit MarketVoided(id, 0, m.failureReason, 0, 0);
+            return bytes32(0);
+        }
         OracleConfig memory config = m.oracle;
         m.state = State.Pending;
         m.requestedAt = uint64(block.timestamp);

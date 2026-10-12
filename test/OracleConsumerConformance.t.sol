@@ -109,6 +109,10 @@ contract OracleConsumerConformanceTest is Test {
         bytes memory body =
             '{"v":1,"question":"Did the event happen?","chainId":1,"window":{"hours":24},"answerType":"bool","evidence":"panel","panelSize":5,"quorum":4,"validForSeconds":900}';
         uint256 id = consumer.createMarket("event", body, ISSUED_AT + 1, ISSUED_AT + 2);
+        verdict.mint(address(this), 200 ether);
+        verdict.approve(address(consumer), 200 ether);
+        consumer.betYes(id, 100 ether);
+        consumer.betNo(id, 100 ether);
         vm.warp(ISSUED_AT + 2);
         bytes32 sourceRequestId = consumer.requestResolution(id);
         OracleAttestation.Attestation memory a = vector();

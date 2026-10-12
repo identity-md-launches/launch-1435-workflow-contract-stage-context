@@ -16,14 +16,14 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_coldCallbackStateFits200kForBothOutcomes() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("cold yes"), true);
         bytes memory signature = _sign(a);
         vm.cool(address(tribunal));
         assertTrue(intake.deliverResult(rid, a, signature));
         assertEq(uint256(tribunal.getMarket(id).state), uint256(Tribunal.State.Yes));
-        uint256 id2 = _create();
+        uint256 id2 = _createContested();
         rid = _request(id2);
         a = _attestation(keccak256("cold no"), false);
         signature = _sign(a);
@@ -47,7 +47,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_wrongCallerUnknownRequestAndOnlySelfRejected() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("UUID"), true);
         bytes memory sig = _sign(a);
@@ -64,7 +64,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_unboundPublicFallbackCannotPairAnUnrelatedSignedQuestion() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("attacker's UUID"), true);
         a.questionHash = keccak256("an unrelated question signed for this consumer");
@@ -76,7 +76,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_invalidSignatureDefersAndPublicFallbackRequiresValidSignatureAndBinding() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("UUID"), true);
         assertTrue(intake.deliverResult(rid, a, _signWith(0xBAD, a)));
@@ -96,7 +96,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_expiredAndFutureAttestationsCannotSettle() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("expired"), true);
         vm.warp(vm.getBlockTimestamp() + 901);
@@ -104,7 +104,7 @@ contract TribunalOracleTest is TribunalFixture {
         vm.expectRevert(abi.encodeWithSelector(OracleAttestationConsumer.AttestationExpired.selector, a.expiresAt));
         tribunal.submitAttestation(id, a, _sign(a));
         assertEq(uint256(tribunal.getMarket(id).state), uint256(Tribunal.State.Pending));
-        uint256 id2 = _create();
+        uint256 id2 = _createContested();
         bytes32 rid2 = _request(id2);
         a = _attestation(keccak256("future"), true);
         a.issuedAt += 301;
@@ -115,7 +115,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_tamperedSignatureCannotFinalize() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("UUID"), true);
         bytes memory signature = _sign(a);
@@ -128,7 +128,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_panelMinimumsMatchTheStoredRequestNotJustAgreement() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("small panel"), true);
         a.panelSize = 4;
@@ -147,7 +147,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function _invalidPanel(uint16 panel, uint16 quorum, uint16 agreed, string memory salt) internal {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256(bytes(salt)), true);
         a.panelSize = panel;
@@ -165,6 +165,8 @@ contract TribunalOracleTest is TribunalFixture {
         uint256 id = tribunal.createMarket(
             "event", body, uint64(vm.getBlockTimestamp() + 1 days), uint64(vm.getBlockTimestamp() + 2 days)
         );
+        _bet(id, alice, true, 100 ether);
+        _bet(id, bob, false, 100 ether);
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("weaker"), true);
         assertTrue(intake.deliverResult(rid, a, _sign(a)));
@@ -173,14 +175,14 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_wrongAnswerTypeAndMalformedBooleanAreRejected() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("wrong type"), true);
         a.answerType = 3;
         assertTrue(intake.deliverResult(rid, a, _sign(a)));
         vm.expectRevert(abi.encodeWithSelector(OracleAttestationConsumer.WrongAnswerType.selector, uint8(0), uint8(3)));
         tribunal.submitAttestation(id, a, _sign(a));
-        uint256 id2 = _create();
+        uint256 id2 = _createContested();
         rid = _request(id2);
         a = _attestation(keccak256("malformed bool"), true);
         a.answer = abi.encode(uint256(2));
@@ -190,7 +192,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_invalidMetadataCannotSettle() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("metadata"), true);
         a.chainId = 4663;
@@ -200,8 +202,8 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_oracleUUIDCannotSettleTwoMarketsAndCallbackCannotReplay() public {
-        uint256 id = _create();
-        uint256 id2 = _create();
+        uint256 id = _createContested();
+        uint256 id2 = _createContested();
         bytes32 rid = _request(id);
         bytes32 rid2 = tribunal.requestResolution(id2);
         OracleAttestation.Attestation memory a = _attestation(keccak256("same UUID"), true);
@@ -216,7 +218,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_signedPayloadFromOtherConsumerCannotSettle() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         Tribunal other = new Tribunal(owner, address(intake), address(imd), ACTION, 0.5 ether, vm.addr(SIGNER_KEY));
         OracleAttestation.Attestation memory a = _attestation(keccak256("other domain"), true);
@@ -228,7 +230,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_failureVoidsOnlyOwnPendingRequestUnder200k() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         assertTrue(intake.deliverFailure(rid, 2, bytes32("disagreed"), 3, 5));
         assertEq(uint256(tribunal.getMarket(id).state), uint256(Tribunal.State.Void));
@@ -242,14 +244,14 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_invalidFailureStatusDoesNotVoid() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         assertFalse(intake.deliverFailure(rid, 0, bytes32(0), 0, 0));
         assertEq(uint256(tribunal.getMarket(id).state), uint256(Tribunal.State.Pending));
     }
 
     function test_noAnswerTimesOutAtSevenDaysAndLateCallbackCannotOverrideVoid() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         uint64 deadline = tribunal.getMarket(id).deadline;
         vm.warp(deadline - 1);
@@ -268,7 +270,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_unrequestedMarketCanVoidAndCannotAskAtDeadline() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         vm.warp(tribunal.getMarket(id).deadline);
         vm.expectRevert(Tribunal.DeadlinePassed.selector);
         tribunal.requestResolution(id);
@@ -284,7 +286,7 @@ contract TribunalOracleTest is TribunalFixture {
         tribunal.setOracleSigner(address(slow));
         vm.warp(vm.getBlockTimestamp() + 48 hours);
         tribunal.activateOracleSigner();
-        uint256 id = _create();
+        uint256 id = _createContested();
         bytes32 rid = _request(id);
         OracleAttestation.Attestation memory a = _attestation(keccak256("slow registry"), true);
         assertTrue(intake.deliverResult(rid, a, ""), "binding callback should complete under 200k");
@@ -294,7 +296,7 @@ contract TribunalOracleTest is TribunalFixture {
     }
 
     function test_signerRotationWaits48HoursAndCannotChangeExistingMarketTrust() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         uint256 newKey = 0x715b;
         address nextSigner = vm.addr(newKey);
         vm.prank(owner);
@@ -312,7 +314,7 @@ contract TribunalOracleTest is TribunalFixture {
         OracleAttestation.Attestation memory a = _attestation(keccak256("old signer still works"), false);
         assertTrue(intake.deliverResult(rid, a, _sign(a)));
         assertEq(uint256(tribunal.getMarket(id).state), uint256(Tribunal.State.No));
-        uint256 id2 = _create();
+        uint256 id2 = _createContested();
         assertEq(tribunal.getMarket(id2).signer, nextSigner);
         rid = _request(id2);
         a = _attestation(keccak256("new signer"), true);
@@ -341,5 +343,28 @@ contract TribunalOracleTest is TribunalFixture {
         vm.expectRevert(Tribunal.NoPendingSigner.selector);
         tribunal.cancelSignerChange();
         assertEq(tribunal.oracleSigner(), vm.addr(SIGNER_KEY));
+    }
+
+    function test_newSignerCannotResolveOldMarketAndOnlyTimeoutRefundsIfOldKeyIsRetired() public {
+        uint256 id = _createContested();
+        uint256 newKey = 0x715b;
+        vm.prank(owner);
+        tribunal.setOracleSigner(vm.addr(newKey));
+        vm.warp(tribunal.signerActivateAfter());
+        tribunal.activateOracleSigner();
+        bytes32 rid = tribunal.requestResolution(id);
+        OracleAttestation.Attestation memory a = _attestation(keccak256("retired signer"), true);
+        bytes memory signature = _signWith(newKey, a);
+        assertTrue(intake.deliverResult(rid, a, signature));
+        assertEq(uint256(tribunal.getMarket(id).state), uint256(Tribunal.State.Pending));
+        vm.expectRevert(OracleAttestationConsumer.BadSignature.selector);
+        tribunal.submitAttestation(id, a, signature);
+        vm.warp(tribunal.getMarket(id).deadline);
+        tribunal.voidMarket(id);
+        assertEq(_claim(id, alice), 100 ether);
+        assertEq(_claim(id, bob), 100 ether);
+        assertEq(_claim(id, creator), 10_000 ether);
+        assertEq(imd.balanceOf(creator), 99.5 ether);
+        _assertSolvent();
     }
 }

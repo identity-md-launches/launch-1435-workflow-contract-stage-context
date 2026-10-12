@@ -157,7 +157,7 @@ contract TribunalMarketsTest is TribunalFixture {
     }
 
     function test_requestTimingAndExactV2PaymentAndCallbacks() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         vm.expectRevert(Tribunal.TooEarly.selector);
         tribunal.requestResolution(id);
         bytes32 rid = _request(id);
@@ -182,7 +182,7 @@ contract TribunalMarketsTest is TribunalFixture {
     }
 
     function test_intakeFailureAndPriceChangeDoNotLockFunds() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         vm.warp(tribunal.getMarket(id).resolveAfter);
         intake.setReject(true);
         vm.expectRevert("Intake unavailable");
@@ -208,8 +208,8 @@ contract TribunalMarketsTest is TribunalFixture {
     }
 
     function test_zeroCollidingAndUnpaidRequestIdsRollback() public {
-        uint256 id = _create();
-        uint256 id2 = _create();
+        uint256 id = _createContested();
+        uint256 id2 = _createContested();
         vm.warp(tribunal.getMarket(id).resolveAfter);
         intake.setForcedId(bytes32(0));
         vm.expectRevert(Tribunal.InvalidRequestId.selector);
@@ -227,7 +227,7 @@ contract TribunalMarketsTest is TribunalFixture {
     }
 
     function test_configurationIsOwnerOnlyAndCannotRewriteExistingMarket() public {
-        uint256 id = _create();
+        uint256 id = _createContested();
         MockIntake replacement = new MockIntake();
         MockToken replacementAsset = new MockToken();
         vm.startPrank(alice);
@@ -255,6 +255,8 @@ contract TribunalMarketsTest is TribunalFixture {
         tribunal.setAction(bytes32("other"));
         tribunal.setPayment(address(replacementAsset), 0.5 ether);
         vm.stopPrank();
+        vm.warp(tribunal.configActivateAfter());
+        tribunal.activateOracleConfig();
         bytes32 rid = _request(id);
         assertEq(intake.getAsk(rid).body, BODY);
         assertEq(replacement.nonce(), 0);
@@ -288,5 +290,19 @@ contract TribunalMarketsTest is TribunalFixture {
         tribunal.acceptOwnership();
         assertEq(tribunal.owner(), alice);
         _assertSolvent();
+    }
+
+    function test_pendingOwnershipTransferDoesNotBlockInitialTokenSetup() public {
+        Tribunal fresh = new Tribunal(owner, address(intake), address(imd), ACTION, 0.5 ether, vm.addr(SIGNER_KEY));
+        vm.prank(owner);
+        fresh.transferOwnership(alice);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        fresh.setVerdictToken(address(verdict));
+        vm.prank(owner);
+        fresh.setVerdictToken(address(verdict));
+        assertEq(address(fresh.verdictToken()), address(verdict));
+        assertEq(fresh.owner(), owner);
+        assertEq(fresh.pendingOwner(), alice);
     }
 }
